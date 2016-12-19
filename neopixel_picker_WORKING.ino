@@ -1,16 +1,6 @@
-/*********************************************************************
- This is an example for our nRF51822 based Bluefruit LE modules
-
- Pick one up today in the adafruit shop!
-
- Adafruit invests time and resources providing this open source code,
- please support Adafruit and open-source hardware by purchasing
- products from Adafruit!
-
- MIT license, check LICENSE for more information
- All text above, and the splash screen below must be included in
- any redistribution
-*********************************************************************/
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_LSM303.h>
 
 #include <string.h>
 #include <Arduino.h>
@@ -27,61 +17,28 @@
 
 #include <Adafruit_NeoPixel.h>
 
-/*=========================================================================
-    APPLICATION SETTINGS
+#define MINIMUM_FIRMWARE_VERSION    "0.6.6"
+#define FACTORYRESET_ENABLE     1
+#define BLUEFRUIT_HWSERIAL_NAME Serial1
+#define PIN                     6
+#define NUMPIXELS               8
 
-    FACTORYRESET_ENABLE       Perform a factory reset when running this sketch
-   
-                              Enabling this will put your Bluefruit LE module
-                              in a 'known good' state and clear any config
-                              data set in previous sketches or projects, so
-                              running this at least once is a good idea.
-   
-                              When deploying your project, however, you will
-                              want to disable factory reset by setting this
-                              value to 0.  If you are making changes to your
-                              Bluefruit LE device via AT commands, and those
-                              changes aren't persisting across resets, this
-                              is the reason why.  Factory reset will erase
-                              the non-volatile memory where config data is
-                              stored, setting it back to factory default
-                              values.
-       
-                              Some sketches that require you to bond to a
-                              central device (HID mouse, keyboard, etc.)
-                              won't work at all with this feature enabled
-                              since the factory reset will clear all of the
-                              bonding data stored on the chip, meaning the
-                              central device won't be able to reconnect.
-    PIN                       Which pin on the Arduino is connected to the NeoPixels?
-    NUMPIXELS                 How many NeoPixels are attached to the Arduino?
-    -----------------------------------------------------------------------*/
-    #define FACTORYRESET_ENABLE     1
-    #define BLUEFRUIT_HWSERIAL_NAME Serial1
-    #define PIN                     6
-    #define NUMPIXELS               8
-/*=========================================================================*/
 
 Adafruit_NeoPixel pixel = Adafruit_NeoPixel(NUMPIXELS, PIN);
-
-// Create the bluefruit object, either software serial...uncomment these lines
-/*
-SoftwareSerial bluefruitSS = SoftwareSerial(BLUEFRUIT_SWUART_TXD_PIN, BLUEFRUIT_SWUART_RXD_PIN);
-
-Adafruit_BluefruitLE_UART ble(bluefruitSS, BLUEFRUIT_UART_MODE_PIN,
-                      BLUEFRUIT_UART_CTS_PIN, BLUEFRUIT_UART_RTS_PIN);
-*/
-
-/* ...or hardware serial, which does not need the RTS/CTS pins. Uncomment this line */
+Adafruit_LSM303 lsm;
 Adafruit_BluefruitLE_UART ble(BLUEFRUIT_HWSERIAL_NAME, BLUEFRUIT_UART_MODE_PIN);
 
-/* ...hardware SPI, using SCK/MOSI/MISO hardware SPI pins and then user selected CS/IRQ/RST */
-// Adafruit_BluefruitLE_SPI ble(BLUEFRUIT_SPI_CS, BLUEFRUIT_SPI_IRQ, BLUEFRUIT_SPI_RST);
+int DELTA_X = 3000;
+int DELTA_Y = 3000;
 
-/* ...software SPI, using SCK/MOSI/MISO user-defined SPI pins and then user selected CS/IRQ/RST */
-//Adafruit_BluefruitLE_SPI ble(BLUEFRUIT_SPI_SCK, BLUEFRUIT_SPI_MISO,
-//                             BLUEFRUIT_SPI_MOSI, BLUEFRUIT_SPI_CS,
-//                             BLUEFRUIT_SPI_IRQ, BLUEFRUIT_SPI_RST);
+int INIT_X_VALUE = 0;
+int INIT_Y_VALUE = 0;
+int PREV_X_VALUE = 0;
+int PREV_Y_VALUE = 0;
+int CURRENT_NUMBER_OF_STEPS = 0;
+int STEPS_GOAL = 5; // 1 mile = 2000 steps
+bool FIRST_ENTRY = true;
+bool SHOW_FIRST_COLOR = true;
 
 
 // A small helper
@@ -99,12 +56,7 @@ void printHex(const uint8_t * data, const uint32_t numBytes);
 extern uint8_t packetbuffer[];
 
 
-/**************************************************************************/
-/*!
-    @brief  Sets up the HW an the BLE module (this function is called
-            automatically on startup)
-*/
-/**************************************************************************/
+
 void setup(void)
 {
 //  while (!Serial);  // required for Flora & Micro
@@ -117,7 +69,7 @@ void setup(void)
   }
   pixel.show();
 
-//  Serial.begin(115200);
+  Serial.begin(115200);
 //  Serial.println(F("Adafruit Bluefruit Neopixel Color Picker Example"));
 //  Serial.println(F("------------------------------------------------"));
 
@@ -165,6 +117,12 @@ void setup(void)
 
 //  Serial.println(F("***********************"));
 
+  if (!lsm.begin())
+  {
+//    Serial.println("Oops ... unable to initialize the LSM303. Check your wiring!");
+    while (1);
+  }
+
 }
 
 /**************************************************************************/
@@ -174,6 +132,57 @@ void setup(void)
 /**************************************************************************/
 void loop(void)
 {
+  lsm.read();
+  Serial.print("Accel X: "); Serial.print((int)lsm.accelData.x); Serial.print(" ");
+  Serial.print("Y: "); Serial.print((int)lsm.accelData.y);       Serial.print(" ");
+  Serial.print("Z: "); Serial.println((int)lsm.accelData.z);     Serial.print(" ");
+
+  // X - back-forward, Y - up-down, Z - ignore haha
+
+  int X = (int)lsm.accelData.x;
+  int Y = (int)lsm.accelData.y;
+
+  if (FIRST_ENTRY) {
+    
+    FIRST_ENTRY = false;
+    
+    INIT_X_VALUE = X;
+    INIT_Y_VALUE = Y;
+    PREV_X_VALUE = X;
+    PREV_Y_VALUE = Y;
+        
+  } else {
+
+    int delta_X = X - PREV_X_VALUE;
+    int delta_Y = Y - PREV_Y_VALUE;
+    if (delta_X < 0) delta_X *= -1;
+    if (delta_Y < 0) delta_Y *= -1;
+
+    // STEP ++
+    if (DELTA_X < delta_X && DELTA_Y < delta_Y) {
+      CURRENT_NUMBER_OF_STEPS += 1;
+      ble.print("Current number of STEPS = "); ble.println(CURRENT_NUMBER_OF_STEPS);
+//      Serial.print("STEP++ :"); Serial.println(CURRENT_NUMBER_OF_STEPS);
+    }
+
+    if (CURRENT_NUMBER_OF_STEPS >= STEPS_GOAL) {
+      CURRENT_NUMBER_OF_STEPS = 0;
+      ble.println("1 mile completed.");
+      pixel.begin(); // This initializes the NeoPixel library.
+      for(uint8_t i=0; i<NUMPIXELS; i++) {
+        if (SHOW_FIRST_COLOR) {
+          pixel.setPixelColor(i, pixel.Color(0,0,0x10)); // blue
+        } else {
+          pixel.setPixelColor(i, pixel.Color(0,0x10,0)); // green
+        }
+      }
+      pixel.show();
+      SHOW_FIRST_COLOR = !SHOW_FIRST_COLOR;
+    }
+    
+  }
+  
+  
   /* Wait for new data to arrive */
   uint8_t len = readPacket(&ble, BLE_READPACKET_TIMEOUT);
   if (len == 0) return;
@@ -199,5 +208,7 @@ void loop(void)
     }
     pixel.show(); // This sends the updated pixel color to the hardware.
   }
+
+  delay(500);
 
 }
